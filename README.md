@@ -1,6 +1,6 @@
 # Jamf Managed Software Update (MSU) Analysis
 
-A comprehensive PowerShell script for analysing Jamf Pro Managed Software Update plans and automating Extension Attribute management for enhanced MSU reporting and Smart Group creation.
+A  PowerShell script for analysing Jamf Pro Managed Software Update plans and automating Extension Attribute management for enhanced MSU reporting.
 
 ## Overview
 
@@ -227,12 +227,10 @@ For questions or issues with this script, please check:
 
 1. The detailed log files in the `logs/` directory
 2. The help output: `.\Invoke-JamfMSUAnalysis.ps1 -Help`
-3. [Canberra Apple Admins Community](https://canberraappleadmins.com/)
 
 ## Author
 
 **Carl Flanagan**  
-Community: [Canberra Apple Admins](https://canberraappleadmins.com/)
 
 ## Licence
 
@@ -242,6 +240,3 @@ This project is licensed under the MIT Licence - see the [LICENSE](LICENSE) file
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for a list of changes and updates.
