@@ -1,2 +1,2 @@
 # Jamf
-Trying to create useful stuff to make my work life easier
+Stuff I use managing Apple devices with Jamf
