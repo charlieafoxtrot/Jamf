@@ -35,9 +35,9 @@
     Display detailed help information and examples
 
 .NOTES
-    Version: 1
+    Version: 1.1
     Author: Carl Flanagan
-    Date: 25 June 2025
+    Date: 26 June 2025
 
     
     This script handles scenarios where Managed Software Updates is disabled,
@@ -441,12 +441,13 @@ function Get-AllDevices {
         $AllComputers = Get-AllComputers
         $AllMobileDevices = Get-AllMobileDevices
         
-        # Create unified device lookup by ID
-        $DeviceLookup = @{}
+        # Create SEPARATE device lookups by type to avoid ID collisions
+        $ComputerLookup = @{}
+        $MobileDeviceLookup = @{}
         
-        # Add computers to lookup
+        # Add computers to computer-specific lookup
         foreach ($computer in $AllComputers) {
-            $DeviceLookup[$computer.id] = @{
+            $ComputerLookup[$computer.id] = @{
                 Type = "Computer"
                 Data = $computer
                 Name = if ($computer.general -and $computer.general.name) { $computer.general.name } else { 'Unknown' }
@@ -461,9 +462,9 @@ function Get-AllDevices {
             }
         }
         
-        # Add mobile devices to lookup
+        # Add mobile devices to mobile-specific lookup
         foreach ($mobileDevice in $AllMobileDevices) {
-            $DeviceLookup[$mobileDevice.mobileDeviceId] = @{
+            $MobileDeviceLookup[$mobileDevice.mobileDeviceId] = @{
                 Type = "Mobile Device"
                 Data = $mobileDevice
                 Name = if ($mobileDevice.general -and $mobileDevice.general.displayName) { $mobileDevice.general.displayName } else { 'Unknown' }
@@ -478,10 +479,12 @@ function Get-AllDevices {
             }
         }
         
-        Write-LogMessage "Total devices in lookup: $($DeviceLookup.Count) (Computers: $($AllComputers.Count), Mobile: $($AllMobileDevices.Count))" "INFO" "Green"
+        Write-LogMessage "Computer lookup: $($ComputerLookup.Count) devices" "INFO" "Green"
+        Write-LogMessage "Mobile device lookup: $($MobileDeviceLookup.Count) devices" "INFO" "Green"
         
         return @{
-            DeviceLookup = $DeviceLookup
+            ComputerLookup = $ComputerLookup
+            MobileDeviceLookup = $MobileDeviceLookup
             Computers = $AllComputers
             MobileDevices = $AllMobileDevices
         }
@@ -636,38 +639,35 @@ function Update-ComputerExtensionAttributes {
     Write-LogMessage "Updating Extension Attributes for computers..." "INFO" "Cyan"
     
     $AllDevices = Get-AllDevices
-    $DeviceLookup = $AllDevices.DeviceLookup
+    $ComputerLookup = $AllDevices.ComputerLookup
     
-    # Filter to only computers since mobile devices don't support Extension Attributes
-    $ComputerDevices = @{}
-    foreach ($deviceId in $DeviceLookup.Keys) {
-        $device = $DeviceLookup[$deviceId]
-        if ($device.Type -eq "Computer") {
-            $ComputerDevices[$deviceId] = $device
-        }
-    }
+    Write-LogMessage "Processing $($ComputerLookup.Count) computers (mobile devices excluded)" "INFO" "Yellow"
     
-    Write-LogMessage "Processing $($ComputerDevices.Count) computers (excluding $($DeviceLookup.Count - $ComputerDevices.Count) mobile devices)" "INFO" "Yellow"
-    
-    # Create lookup of update plans by device ID
+    # Create lookup of update plans by device ID - ONLY for computers
     $UpdatePlanLookup = @{}
     foreach ($plan in $UpdatePlans) {
         $deviceId = $plan.device.deviceId
-        if ($deviceId) {
+        # Only add plans that match computers, not mobile devices
+        if ($deviceId -and $ComputerLookup.ContainsKey($deviceId)) {
             $UpdatePlanLookup[$deviceId] = $plan
+            Write-LogMessage "   Plan mapped: Computer ID $deviceId" "INFO" "Gray"
+        } else {
+            Write-LogMessage "   Plan skipped: Device ID $deviceId (not a computer or not found)" "INFO" "Yellow"
         }
     }
     
+    Write-LogMessage "Update plans mapped to computers: $($UpdatePlanLookup.Count)" "INFO" "Cyan"
+    
     $UpdatedCount = 0
     $ErrorCount = 0
-    $TotalComputers = $ComputerDevices.Count
-    $script:SessionStats.DevicesProcessed = $DeviceLookup.Count
+    $TotalComputers = $ComputerLookup.Count
+    $script:SessionStats.DevicesProcessed = $ComputerLookup.Count + $AllDevices.MobileDevices.Count
     
     # Statistics tracking
     $StatusCounts = @{}
     
-    foreach ($deviceId in $ComputerDevices.Keys) {
-        $device = $ComputerDevices[$deviceId]
+    foreach ($deviceId in $ComputerLookup.Keys) {
+        $device = $ComputerLookup[$deviceId]
         $deviceName = $device.Name
         
         Write-Progress -Activity "Updating Extension Attributes" -Status "Processing $deviceName" -PercentComplete (($UpdatedCount / $TotalComputers) * 100)
@@ -698,6 +698,8 @@ function Update-ComputerExtensionAttributes {
             } else { 
                 "Not Set" 
             }
+            
+            Write-LogMessage "   Plan found for computer $deviceName (ID: $deviceId): $($Values['MSU_Plan_Status'])" "INFO" "Green"
         }
         
         # Track statistics
@@ -719,13 +721,8 @@ function Update-ComputerExtensionAttributes {
         Start-Sleep -Milliseconds 50
     }
     
-    # Store status counts for summary (includes all devices for overall statistics)
-    foreach ($deviceId in $DeviceLookup.Keys) {
-        $device = $DeviceLookup[$deviceId]
-        if ($device.Type -eq "Mobile Device") {
-            $script:SessionStats.MobileDevicesProcessed++
-        }
-    }
+    # Store mobile device count for summary
+    $script:SessionStats.MobileDevicesProcessed = $AllDevices.MobileDevices.Count
     
     # Store status counts for summary
     $script:SessionStats.StatusCounts = $StatusCounts
@@ -772,32 +769,37 @@ function ConvertTo-UpdatePlanTable {
     
     Write-LogMessage "Processing plan data with enhanced user details..." "INFO" "Cyan"
     
-    # Always fetch all device details (computers and mobile devices)
+    # Get separate device lookups to avoid ID collisions
     Write-LogMessage "Fetching all device details including user information..." "INFO" "Yellow"
     $AllDevices = Get-AllDevices
-    $DeviceLookup = $AllDevices.DeviceLookup
+    $ComputerLookup = $AllDevices.ComputerLookup
+    $MobileDeviceLookup = $AllDevices.MobileDeviceLookup
     
-    # Debug: Show sample device IDs and device IDs from plans
-    if ($DeviceLookup.Count -gt 0) {
-        $SampleDeviceIds = $DeviceLookup.Keys | Select-Object -First 3
-        Write-LogMessage "Sample device IDs: $($SampleDeviceIds -join ', ')" "INFO" "Gray"
+    # Debug: Show sample device IDs from each lookup
+    if ($ComputerLookup.Count -gt 0) {
+        $SampleComputerIds = $ComputerLookup.Keys | Select-Object -First 3
+        Write-LogMessage "Sample computer IDs: $($SampleComputerIds -join ', ')" "INFO" "Gray"
+    }
+    if ($MobileDeviceLookup.Count -gt 0) {
+        $SampleMobileIds = $MobileDeviceLookup.Keys | Select-Object -First 3
+        Write-LogMessage "Sample mobile device IDs: $($SampleMobileIds -join ', ')" "INFO" "Gray"
     }
     if ($Plans.Count -gt 0) {
         Write-LogMessage "Sample plan device IDs: $($Plans[0..2] | ForEach-Object { $_.device.deviceId })" "INFO" "Gray"
     }
     
-    Write-LogMessage "Device lookup created with $($DeviceLookup.Count) devices" "INFO" "Gray"
+    Write-LogMessage "Computer lookup created with $($ComputerLookup.Count) computers" "INFO" "Gray"
+    Write-LogMessage "Mobile device lookup created with $($MobileDeviceLookup.Count) mobile devices" "INFO" "Gray"
     
     $TableData = @()
-    $MatchedCount = 0
+    $ComputerMatchedCount = 0
+    $MobileMatchedCount = 0
+    $UnmatchedCount = 0
     
     foreach ($Plan in $Plans) {
         $Device = $Plan.device
         $Status = $Plan.status
         $DeviceId = $Device.deviceId
-        
-        # Debug: Show the device ID we're trying to match
-        Write-LogMessage "Processing plan for device ID: '$DeviceId' (type: $($DeviceId.GetType().Name))" "INFO" "Gray"
         
         # Initialize with device detail fields including user information
         $Row = [PSCustomObject]@{
@@ -821,32 +823,39 @@ function ConvertTo-UpdatePlanTable {
             'Force Install Date' = if ($Plan.forceInstallLocalDateTime) { $Plan.forceInstallLocalDateTime } else { 'Not Set' }
         }
         
-        # Try multiple matching approaches
+        # Try to match device - CHECK COMPUTERS FIRST since MSU plans are typically for computers
         $deviceInfo = $null
+        $deviceSource = ""
         
-        # Method 1: Direct lookup
-        if ($DeviceLookup.ContainsKey($DeviceId)) {
-            $deviceInfo = $DeviceLookup[$DeviceId]
-            Write-LogMessage "   Direct match found for $DeviceId" "INFO" "Green"
+        # Method 1: Try computer lookup first (most likely for MSU plans)
+        if ($ComputerLookup.ContainsKey($DeviceId)) {
+            $deviceInfo = $ComputerLookup[$DeviceId]
+            $deviceSource = "Computer"
+            $ComputerMatchedCount++
+            Write-LogMessage "   Computer match found for $DeviceId" "INFO" "Green"
         }
-        # Method 2: String conversion lookup
-        elseif ($DeviceLookup.ContainsKey($DeviceId.ToString())) {
-            $deviceInfo = $DeviceLookup[$DeviceId.ToString()]
-            Write-LogMessage "   String match found for $DeviceId" "INFO" "Green"
+        # Method 2: Try mobile device lookup only if no computer match
+        elseif ($MobileDeviceLookup.ContainsKey($DeviceId)) {
+            $deviceInfo = $MobileDeviceLookup[$DeviceId]
+            $deviceSource = "Mobile Device"
+            $MobileMatchedCount++
+            Write-LogMessage "   Mobile device match found for $DeviceId" "INFO" "Yellow"
         }
-        # Method 3: Try finding by iterating (in case of type mismatch)
-        else {
-            foreach ($DevId in $DeviceLookup.Keys) {
-                if ($DevId -eq $DeviceId -or $DevId.ToString() -eq $DeviceId.ToString()) {
-                    $deviceInfo = $DeviceLookup[$DevId]
-                    Write-LogMessage "   Iteration match found: '$DevId' matches '$DeviceId'" "INFO" "Green"
-                    break
-                }
-            }
+        # Method 3: String conversion attempts for both lookups
+        elseif ($ComputerLookup.ContainsKey($DeviceId.ToString())) {
+            $deviceInfo = $ComputerLookup[$DeviceId.ToString()]
+            $deviceSource = "Computer (string match)"
+            $ComputerMatchedCount++
+            Write-LogMessage "   Computer string match found for $DeviceId" "INFO" "Green"
+        }
+        elseif ($MobileDeviceLookup.ContainsKey($DeviceId.ToString())) {
+            $deviceInfo = $MobileDeviceLookup[$DeviceId.ToString()]
+            $deviceSource = "Mobile Device (string match)"
+            $MobileMatchedCount++
+            Write-LogMessage "   Mobile device string match found for $DeviceId" "INFO" "Yellow"
         }
         
         if ($deviceInfo) {
-            $MatchedCount++
             $Row.'Device Type' = $deviceInfo.Type
             $Row.'Computer Name' = $deviceInfo.Name
             $Row.'Serial Number' = $deviceInfo.SerialNumber
@@ -858,16 +867,20 @@ function ConvertTo-UpdatePlanTable {
             $Row.'Email' = $deviceInfo.Email
             $Row.'Position' = $deviceInfo.Position
             
-            Write-LogMessage "   SUCCESS: $DeviceId -> $($deviceInfo.Type) | $($deviceInfo.Name) | $($deviceInfo.SerialNumber) | $($deviceInfo.Username) | $($deviceInfo.Email)" "INFO" "Cyan"
+            Write-LogMessage "   SUCCESS ($deviceSource): $DeviceId -> $($deviceInfo.Type) | $($deviceInfo.Name) | $($deviceInfo.SerialNumber) | $($deviceInfo.Username) | $($deviceInfo.Email)" "INFO" "Cyan"
         } else {
-            Write-LogMessage "   NO MATCH: Could not find device for device ID '$DeviceId'" "INFO" "Red"
+            $UnmatchedCount++
+            Write-LogMessage "   NO MATCH: Could not find device for device ID '$DeviceId' in either lookup" "INFO" "Red"
         }
         
         $TableData += $Row
     }
     
     Write-LogMessage "Created table with $($TableData.Count) rows" "INFO" "Green"
-    Write-LogMessage "Successfully matched $MatchedCount out of $($Plans.Count) devices" "INFO" "Yellow"
+    Write-LogMessage "Computer matches: $ComputerMatchedCount" "INFO" "Green"
+    Write-LogMessage "Mobile device matches: $MobileMatchedCount" "INFO" "Yellow"
+    Write-LogMessage "Unmatched: $UnmatchedCount" "INFO" "Red"
+    
     if ($TableData.Count -gt 0) {
         $PropertyNames = $TableData[0] | Get-Member -MemberType NoteProperty | ForEach-Object { $_.Name } | Sort-Object
         Write-LogMessage "CSV will contain columns: $($PropertyNames -join ', ')" "INFO" "Cyan"
